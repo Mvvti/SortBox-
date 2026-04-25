@@ -1,0 +1,5 @@
+﻿customtkinter
+watchdog
+pystray
+Pillow
+pyinstaller
