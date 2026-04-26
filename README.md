@@ -1,6 +1,6 @@
-# Folder Sorter
+# SortBox
 
-Folder Sorter is a Windows 11 desktop app that automatically organizes files from your `Downloads` folder into category subfolders (Images, Documents, Video, Music, Archives, Programs, Code, and more).
+SortBox is a Windows 11 desktop app that automatically organizes files from your `Downloads` folder into category subfolders (Images, Documents, Video, Music, Archives, Programs, Code, and more).
 
 It includes:
 - a modern GUI built with `customtkinter`
