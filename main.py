@@ -7,8 +7,12 @@ import sys
 import threading
 from typing import Callable
 
+from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtWidgets import QApplication
+
 from gui import MainWindow
 from notifier import Notifier
+from rules import RULES_PATH, RulesManager
 from sorter import FolderSorter, sort_existing_files
 from tray import TrayIcon
 
@@ -34,6 +38,10 @@ def _release_single_instance_mutex(handle: int | None) -> None:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+class _UiBridge(QObject):
+    log_message = pyqtSignal(str)
+
+
 class App:
     """Koordynuje GUI, tray i monitorowanie folderu."""
 
@@ -42,32 +50,24 @@ class App:
         self._quitting = False
         self._state_lock = threading.Lock()
         self.notifier = Notifier()
-
-        self.window = MainWindow(
-            on_sort_now=self.on_sort_now,
-            on_pause=self.on_pause,
-            on_resume=self.on_resume,
-            on_quit=self.on_quit,
-        )
-        self.tray = TrayIcon(
-            on_show=self.on_show,
-            on_pause=self.on_pause,
-            on_resume=self.on_resume,
-            on_quit=self.on_quit,
-        )
-        self.sorter = FolderSorter(on_event=self.on_event)
+        self.rules_manager = RulesManager(RULES_PATH)
+        self.app: QApplication | None = None
+        self.window: MainWindow | None = None
+        self.tray: TrayIcon | None = None
+        self.sorter: FolderSorter | None = None
+        self._ui_bridge: _UiBridge | None = None
 
     def _log_threadsafe(self, message: str) -> None:
-        try:
-            self.window.root.after(0, lambda m=message: self.window.log(m))
-        except Exception:  # noqa: BLE001
-            pass
+        if self._ui_bridge is not None:
+            self._ui_bridge.log_message.emit(message)
 
     def _sync_paused_state(self) -> None:
+        if self.window is None or self.tray is None:
+            return
         paused = self._paused
         running = not paused
-        self.window.root.after(0, lambda p=paused, r=running: self._apply_gui_state(p, r))
-        self.tray.set_paused(self._paused)
+        self._apply_gui_state(paused=paused, running=running)
+        self.tray.set_paused(paused)
 
     def _apply_gui_state(self, paused: bool, running: bool) -> None:
         self.window.set_paused(paused)
@@ -99,10 +99,11 @@ class App:
         with self._state_lock:
             if self._paused or self._quitting:
                 return
-            self.sorter.stop()
-            self.notifier.stop()
             self._paused = True
-            self._sync_paused_state()
+            self.notifier.stop()
+        if self.sorter is not None:
+            self.sorter.stop()
+        self._sync_paused_state()
         self._log_threadsafe("Monitorowanie wstrzymane.")
 
     def on_resume(self) -> None:
@@ -110,7 +111,8 @@ class App:
             if not self._paused or self._quitting:
                 return
             try:
-                self.sorter.start()
+                if self.sorter is not None:
+                    self.sorter.start()
             except Exception as exc:  # noqa: BLE001
                 self._log_threadsafe(f"Nie mozna wznowic monitorowania: {exc}")
                 return
@@ -120,11 +122,8 @@ class App:
         self._log_threadsafe("Monitorowanie wznowione.")
 
     def on_show(self) -> None:
-        try:
-            self.window.root.after(0, self.window.show)
-            self.window.root.after(120, self.window.show)
-        except Exception:  # noqa: BLE001
-            pass
+        if self.window is not None:
+            self.window.show_window()
 
     def on_quit(self) -> None:
         with self._state_lock:
@@ -132,9 +131,13 @@ class App:
                 return
             self._quitting = True
             self.notifier.stop()
+        if self.sorter is not None:
             self.sorter.stop()
+        if self.tray is not None:
             self.tray.stop()
-        self.window.root.after(0, self.window.root.destroy)
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def on_event(self, message: str) -> None:
         self._log_threadsafe(message)
@@ -143,23 +146,43 @@ class App:
         if should_notify:
             self.notifier.notify(message)
 
-    def run(self) -> None:
+    def run(self) -> int:
+        # QApplication musi istniec przed tworzeniem jakichkolwiek widgetow Qt.
+        self.app = QApplication.instance() or QApplication(sys.argv)
+        self.window = MainWindow(
+            on_sort_now=self.on_sort_now,
+            rules_manager=self.rules_manager,
+            on_pause=self.on_pause,
+            on_resume=self.on_resume,
+            on_quit=self.on_quit,
+        )
+        self.tray = TrayIcon(
+            on_show=self.on_show,
+            on_pause=self.on_pause,
+            on_resume=self.on_resume,
+            on_quit=self.on_quit,
+        )
+        self.sorter = FolderSorter(on_event=self.on_event)
+        self._ui_bridge = _UiBridge()
+        self._ui_bridge.log_message.connect(self.window.log)
+
         self.window.log("Aplikacja uruchomiona. Monitorowanie aktywne.")
 
         try:
             self.sorter.start()
         except Exception as exc:  # noqa: BLE001
-            self.window.log(f"Nie mozna uruchomic monitorowania: {exc}")
+            self._log_threadsafe(f"Nie mozna uruchomic monitorowania: {exc}")
             self._paused = True
 
         try:
             self.tray.start()
         except Exception as exc:  # noqa: BLE001
-            self.window.log(f"Nie mozna uruchomic ikony tray: {exc}")
+            self._log_threadsafe(f"Nie mozna uruchomic ikony tray: {exc}")
+            self.window.closeEvent = lambda event: event.accept()  # type: ignore[method-assign]
 
         self._sync_paused_state()
         self._run_in_thread(self._run_sort_and_log)
-        self.window.start()
+        return self.window.start()
 
 
 if __name__ == "__main__":
@@ -168,6 +191,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        App().run()
+        sys.exit(App().run())
     finally:
         _release_single_instance_mutex(mutex_handle)

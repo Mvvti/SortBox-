@@ -1,25 +1,16 @@
-"""Obsluga ikony aplikacji w zasobniku systemowym."""
+"""Obsluga ikony zasobnika systemowego przez PyQt6."""
 
 from __future__ import annotations
 
-import threading
 from typing import Callable
 
-try:
-    import pystray
-    from PIL import Image, ImageDraw, ImageFont
-
-    _TRAY_IMPORT_ERROR: ModuleNotFoundError | None = None
-except ModuleNotFoundError as exc:
-    pystray = None  # type: ignore[assignment]
-    Image = None  # type: ignore[assignment]
-    ImageDraw = None  # type: ignore[assignment]
-    ImageFont = None  # type: ignore[assignment]
-    _TRAY_IMPORT_ERROR = exc
+from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
 class TrayIcon:
-    """Zarzadza ikona tray i jej menu kontekstowym."""
+    """Zarzadza ikona tray i menu kontekstowym."""
 
     def __init__(
         self,
@@ -33,88 +24,100 @@ class TrayIcon:
         self._on_resume = on_resume
         self._on_quit = on_quit
         self._paused = False
-        self._lock = threading.Lock()
 
-        self._icon = None
-        self._thread: threading.Thread | None = None
+        self._tray: QSystemTrayIcon | None = None
+        self._menu: QMenu | None = None
+        self._toggle_action: QAction | None = None
+        self._show_action: QAction | None = None
+        self._quit_action: QAction | None = None
 
-    def _create_image(self):
-        image = Image.new("RGBA", (64, 64), (36, 112, 255, 255))
-        draw = ImageDraw.Draw(image)
+    def _create_icon(self) -> QIcon:
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
 
-        try:
-            font = ImageFont.truetype("arial.ttf", 42)
-        except OSError:
-            font = ImageFont.load_default()
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#A78BFA"))
+        painter.drawRoundedRect(QRect(0, 0, 64, 64), 14, 14)
 
-        text = "F"
-        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-        text_width = right - left
-        text_height = bottom - top
-        x = (64 - text_width) / 2 - left
-        y = (64 - text_height) / 2 - top
-        draw.text((x, y), text, fill=(255, 255, 255, 255), font=font)
-        return image
+        painter.setPen(QColor("#FFFFFF"))
+        font = QFont("Segoe UI", 34, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(QRect(0, 0, 64, 64), Qt.AlignmentFlag.AlignCenter, "S")
+        painter.end()
 
-    def _pause_resume_label(self, _item) -> str:
+        return QIcon(pixmap)
+
+    def _toggle_label(self) -> str:
         return "Wznów" if self._paused else "Wstrzymaj"
 
-    def _handle_show(self, _icon, _item) -> None:
+    def _handle_show(self) -> None:
         self._on_show()
 
-    def _handle_pause_resume(self, _icon, _item) -> None:
+    def _handle_toggle(self) -> None:
         if self._paused:
             self._on_resume()
         else:
             self._on_pause()
 
-    def _handle_quit(self, _icon, _item) -> None:
+    def _handle_quit(self) -> None:
         self._on_quit()
 
-    def _build_menu(self):
-        return pystray.Menu(
-            pystray.MenuItem("Otwórz", self._handle_show, default=True),
-            pystray.MenuItem(self._pause_resume_label, self._handle_pause_resume),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Wyjdź", self._handle_quit),
-        )
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._on_show()
 
     def start(self) -> None:
-        if _TRAY_IMPORT_ERROR is not None:
-            raise RuntimeError(
-                "Brak zaleznosci 'pystray' lub 'Pillow'. Zainstaluj requirements.txt."
-            ) from _TRAY_IMPORT_ERROR
+        if self.is_running():
+            return
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            raise RuntimeError("Zasobnik systemowy nie jest dostepny.")
 
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError("QApplication nie jest uruchomione.")
 
-            self._icon = pystray.Icon(
-                "folder-sorter",
-                self._create_image(),
-                "Folder Sorter",
-                self._build_menu(),
-            )
-            self._thread = threading.Thread(target=self._icon.run, daemon=True)
-            self._thread.start()
+        self._menu = QMenu()
+        self._show_action = QAction("Otwórz", self._menu)
+        self._show_action.triggered.connect(self._handle_show)
+        self._menu.addAction(self._show_action)
+        self._menu.setDefaultAction(self._show_action)
+
+        self._toggle_action = QAction(self._toggle_label(), self._menu)
+        self._toggle_action.triggered.connect(self._handle_toggle)
+        self._menu.addAction(self._toggle_action)
+
+        self._menu.addSeparator()
+
+        self._quit_action = QAction("Wyjdź", self._menu)
+        self._quit_action.triggered.connect(self._handle_quit)
+        self._menu.addAction(self._quit_action)
+
+        self._tray = QSystemTrayIcon(self._create_icon(), app)
+        self._tray.setToolTip("SortBox")
+        self._tray.setContextMenu(self._menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
 
     def stop(self) -> None:
-        with self._lock:
-            icon = self._icon
-            thread = self._thread
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.deleteLater()
 
-        if icon is not None:
-            icon.stop()
+        if self._menu is not None:
+            self._menu.deleteLater()
 
-        current_thread = threading.current_thread()
-        if thread is not None and thread.is_alive() and thread is not current_thread:
-            thread.join(timeout=2)
-
-        with self._lock:
-            self._icon = None
-            self._thread = None
+        self._tray = None
+        self._menu = None
+        self._toggle_action = None
+        self._show_action = None
+        self._quit_action = None
 
     def set_paused(self, paused: bool) -> None:
         self._paused = paused
-        if self._icon is not None:
-            self._icon.update_menu()
+        if self._toggle_action is not None:
+            self._toggle_action.setText(self._toggle_label())
+
+    def is_running(self) -> bool:
+        return self._tray is not None

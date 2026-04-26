@@ -1,5 +1,3 @@
-﻿customtkinter
+﻿PyQt6
 watchdog
-pystray
-Pillow
 pyinstaller

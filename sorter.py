@@ -17,9 +17,11 @@ except ModuleNotFoundError as exc:
     _WATCHDOG_IMPORT_ERROR = exc
 
 from config import CATEGORIES, DOWNLOADS_PATH
+from rules import RULES_PATH, Rule, RulesManager
 
 TEMP_EXTENSIONS = {".crdownload", ".part", ".tmp", ".download", ".partial"}
 DUPLICATES_DIR = DOWNLOADS_PATH / "Duplikaty"
+_rules_manager = RulesManager(RULES_PATH)
 
 _EXTENSION_TO_CATEGORY = {
     extension.lower(): category
@@ -78,7 +80,9 @@ def _move_file(file_path: Path) -> str | None:
     if current_file and resolved == current_file:
         return None
 
-    category = get_category(resolved.name)
+    rules = _rules_manager.load()
+    matched_rule: Rule | None = _rules_manager.match(resolved.name, rules)
+    category = matched_rule.folder if matched_rule else get_category(resolved.name)
     target_dir = downloads_root / category
     target_dir.mkdir(exist_ok=True)
     is_duplicate = (target_dir / resolved.name).exists()
@@ -94,6 +98,8 @@ def _move_file(file_path: Path) -> str | None:
         return None
     if is_duplicate:
         return f"{resolved.name} -> Duplikaty (duplikat)"
+    if matched_rule is not None:
+        return f"{resolved.name} -> {matched_rule.folder} (reguła)"
     return f"{resolved.name} -> {category}"
 
 

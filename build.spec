@@ -1,15 +1,15 @@
 ﻿# -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_all
 
-datas = collect_data_files("customtkinter")
+datas, binaries, hiddenimports = collect_all("PyQt6")
 
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=["pystray._win32"],
+    hiddenimports=hiddenimports + ["PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
